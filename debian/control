@@ -1,0 +1,17 @@
+Source: homelab-siem-scanner
+Section: admin
+Priority: optional
+Maintainer: rist138 <zak8138@protonmail.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+
+Package: homelab-siem-scanner
+Architecture: all
+Depends: ${misc:Depends}, curl, jq, openssl, apt-transport-https, gnupg2
+Suggests: ufw, nmap, clamav, wireguard-tools
+Description: Integrated Home Lab SIEM and Security Scanner Orchestrator
+ This package automates the secure local deployment, network isolation,
+ and baseline hardening rules for a unified Wazuh SIEM ecosystem. It 
+ automatically provisions host firewall rules (UFW), initializes threat
+ detection tools (ClamAV, Nmap), and bootstraps the centralized central
+ monitoring manager, indexing nodes, and visual dashboard interfaces.

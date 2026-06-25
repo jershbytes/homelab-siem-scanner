@@ -1,0 +1,51 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+    echo "========================================================="
+    echo "  DEPLOYING SIEM: WAZUH + INTERNAL ELK + GRAFANA DASHBOARD"
+    echo "========================================================="
+
+    BIND_IP=$(tailscale ip -4 2>/dev/null || hostname -I | awk '{print $1}')
+
+    # 1. Install Wazuh and its integrated ELK/OpenSearch components
+    if ! command -v wazuh-manager >/dev/null 2>&1; then
+        echo "[+] Fetching unified Wazuh/ELK deployment engine..."
+        curl -sO https://wazuh.com
+        echo "[+] Running silent all-in-one SIEM cluster initialization (This takes ~5-10 mins)..."
+        bash wazuh-install.sh -a --silent
+    fi
+
+    # 2. Install Grafana Server cleanly via official channels
+    if ! command -v grafana-server >/dev/null 2>&1; then
+        echo "[+] Provisioning Grafana visualization layer..."
+        mkdir -p /etc/apt/keyrings/
+        curl -fsSL https://grafana.com | gpg --dearmor -o /etc/apt/keyrings/grafana.gpg
+        echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://grafana.com stable main" > /etc/apt/sources.list.d/grafana.list
+        
+        apt-get update
+        apt-get install -y grafana
+        
+        # Start and enable Grafana boot sequencing
+        systemctl daemon-reload
+        systemctl enable grafana-server
+        systemctl start grafana-server
+    fi
+
+    # 3. Configure the Security Firewalls
+    echo "[+] Securing interfaces with localized UFW firewall rules..."
+    ufw default deny incoming
+    ufw allow from 100.0.0.0/8 to any port 22 proto tcp comment 'SSH over Tailscale'
+    ufw allow from 100.0.0.0/8 to any port 443 proto tcp comment 'Wazuh Core UI'
+    ufw allow from 100.0.0.0/8 to any port 3000 proto tcp comment 'Grafana SIEM UI'
+    ufw allow from 100.0.0.0/8 to any port 1514 proto tcp comment 'Log Ingestion Engine'
+    ufw reload
+
+    echo "========================================================="
+    echo " SUCCESS! Your SIEM Environment is deploying."
+    echo " Access Core Interface: https://$BIND_IP"
+    echo " Access Grafana Console: http://$BIND_IP:3000"
+    echo "========================================================="
+fi
+
+exit 0

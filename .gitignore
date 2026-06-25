@@ -1,0 +1,7 @@
+../*_source.changes
+../*_source.buildinfo
+../*_source.upload
+../*.tar.xz
+../*.dsc
+../*.deb
+.build/

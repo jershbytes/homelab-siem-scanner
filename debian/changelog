@@ -1,0 +1,47 @@
+homelab-siem-scanner (2.5) noble; urgency=medium
+
+  * Implemented interactive setup wizard prompts for non-core features.
+
+ -- rist138 <zak8138@protonmail.com>  Thu, 25 Jun 2026 01:01:46 +0000
+
+homelab-siem-scanner (2.4) noble; urgency=medium
+
+  * Expanded package description field to accurately reflect added
+    security tooling.
+
+ -- rist138 <zak8138@protonmail.com>  Thu, 25 Jun 2026 00:37:56 +0000
+
+homelab-siem-scanner (2.3) noble; urgency=medium
+
+  * Added machine-readable debian/copyright file under GPL-3 license
+    terms.
+
+ -- rist138 <zak8138@protonmail.com>  Wed, 24 Jun 2026 23:37:33 +0000
+
+homelab-siem-scanner (2.2) noble; urgency=medium
+
+  * Routing upload bundle directly to default PPA queue path.
+
+ -- rist138 <zak8138@protonmail.com>  Wed, 24 Jun 2026 23:30:22 +0000
+
+homelab-siem-scanner (2.1) noble; urgency=medium
+
+  * Incrementing version to clear the previous processing lock.
+
+ -- rist138 <zak8138@protonmail.com>  Wed, 24 Jun 2026 23:27:46 +0000
+
+homelab-siem-scanner (2.0) noble; urgency=medium
+
+  [ rist138 ]
+  * Upgraded architecture to integrate native Grafana server with the
+    core ELK/Wazuh indexer.
+  * Formatting package version cleanly as native to pass Launchpad
+    ingestion.
+
+ -- rist138 <zak8138@protonmail.com>  Wed, 24 Jun 2026 23:24:33 +0000
+
+homelab-siem-scanner (1.0-0ubuntu1) noble; urgency=medium
+
+  * Initial Home Lab SIEM & Scanner Package release for Launchpad PPA.
+
+ -- rist138 <zak8138@protonmail.com>  Wed, 24 Jun 2026 00:23:36 +0000
