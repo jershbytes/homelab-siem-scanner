@@ -1,3 +1,17 @@
+homelab-siem-scanner (2.8) noble; urgency=medium
+
+  * Integrated automated APT version pinning policy for Wazuh/ELK components
+    inside the postinst sequence.
+
+ -- rist138 <zak8138@protonmail.com>  Tue, 07 Jul 2026 23:30:00 +0000
+
+homelab-siem-scanner (2.7) noble; urgency=medium
+
+  * Fixed install paths to comply with Debian policy and removed Grafana
+    hooks.
+
+ -- rist138 <zak8138@protonmail.com>  Tue, 07 Jul 2026 22:07:55 +0000
+
 homelab-siem-scanner (2.6) noble; urgency=medium
 
   * Removed wireguard-tools dependency and updated core descriptions.
