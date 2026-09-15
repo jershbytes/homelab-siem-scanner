@@ -7,3 +7,13 @@
     notifempty
     create 0640 root adm
 }
+
+/var/log/homelab-siem-doctor.log {
+    weekly
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root adm
+}

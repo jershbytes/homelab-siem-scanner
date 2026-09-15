@@ -1,1 +1,2 @@
 bin/homelab-siem-full-setup usr/sbin/
+bin/homelab-siem-doctor usr/sbin/

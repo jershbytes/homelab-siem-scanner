@@ -1,0 +1,317 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+JSON=0
+LOG_PATH=/var/log/homelab-siem-doctor.log
+
+usage() {
+    cat <<'EOF'
+Usage: homelab-siem-doctor [options]
+
+Read-only health check for a homelab-siem-scanner deployment.
+This command does not install packages, change UFW, or modify Wazuh.
+
+Options:
+  --json      Emit machine-readable JSON
+  -h, --help  Display this help
+EOF
+}
+
+while (($#)); do
+    case "$1" in
+        --json)
+            JSON=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            printf 'ERROR: Unknown option: %s\n' "$1" >&2
+            exit 1
+            ;;
+    esac
+done
+
+json_escape() {
+    printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()), end="")' 2>/dev/null \
+        || printf '"%s"' "${1//\"/\\\"}"
+}
+
+status_ok() { printf 'OK'; }
+status_warn() { printf 'WARN'; }
+status_fail() { printf 'FAIL'; }
+status_info() { printf 'INFO'; }
+
+declare -a REPORT_KEYS=()
+declare -A REPORT_STATUS=()
+declare -A REPORT_DETAIL=()
+
+add_finding() {
+    local key=$1 status=$2 detail=$3
+    REPORT_KEYS+=("$key")
+    REPORT_STATUS["$key"]=$status
+    REPORT_DETAIL["$key"]=$detail
+}
+
+print_finding() {
+    local key=$1
+    printf '%-12s %-28s %s\n' "[${REPORT_STATUS[$key]}]" "$key" "${REPORT_DETAIL[$key]}"
+}
+
+service_state() {
+    local unit=$1
+    if systemctl list-unit-files "$unit" >/dev/null 2>&1; then
+        systemctl is-active "$unit" 2>/dev/null || true
+    else
+        printf 'absent'
+    fi
+}
+
+package_version() {
+    dpkg-query -W -f='${Version}' "$1" 2>/dev/null || true
+}
+
+package_status() {
+    dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null || printf 'not-installed'
+}
+
+cert_expiry() {
+    local cert=$1
+    [[ -r "$cert" ]] || return 1
+    openssl x509 -in "$cert" -noout -enddate 2>/dev/null | sed 's/^notAfter=//'
+}
+
+days_until() {
+    local enddate=$1
+    python3 - "$enddate" <<'PY' 2>/dev/null || true
+import datetime, sys
+raw = sys.argv[1]
+for fmt in ("%b %d %H:%M:%S %Y %Z", "%b %d %H:%M:%S %Y GMT"):
+    try:
+        expiry = datetime.datetime.strptime(raw, fmt).replace(tzinfo=datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        print(int((expiry - now).total_seconds() // 86400))
+        break
+    except ValueError:
+        pass
+PY
+}
+
+MEM_KIB=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+CPU_COUNT=$(nproc)
+DISK_KIB=$(df -Pk / | awk 'NR==2 {print $2}')
+DISK_AVAIL_KIB=$(df -Pk / | awk 'NR==2 {print $4}')
+MEM_GB=$(awk -v kib="$MEM_KIB" 'BEGIN { printf "%.1f", kib/1024/1024 }')
+DISK_GB=$(awk -v kib="$DISK_KIB" 'BEGIN { printf "%.0f", kib/1024/1024 }')
+DISK_AVAIL_GB=$(awk -v kib="$DISK_AVAIL_KIB" 'BEGIN { printf "%.1f", kib/1024/1024 }')
+
+ORCH_PKG=not-installed
+ORCH_VERSION=
+if [[ "$(package_status homelab-siem-scanner)" == installed ]]; then
+    ORCH_PKG=homelab-siem-scanner
+    ORCH_VERSION=$(package_version homelab-siem-scanner)
+elif [[ "$(package_status homelab-siem-scanner-full)" == installed ]]; then
+    ORCH_PKG=homelab-siem-scanner-full
+    ORCH_VERSION=$(package_version homelab-siem-scanner-full)
+fi
+
+add_finding orchestrator "$( [[ "$ORCH_PKG" != not-installed ]] && status_ok || status_warn )" \
+    "${ORCH_PKG}${ORCH_VERSION:+ $ORCH_VERSION}"
+
+add_finding resources "$(status_info)" \
+    "${CPU_COUNT} CPU, ${MEM_GB} GiB RAM, ${DISK_AVAIL_GB} GiB free of ${DISK_GB} GiB"
+
+MANAGER_STATUS=$(package_status wazuh-manager)
+INDEXER_STATUS=$(package_status wazuh-indexer)
+DASHBOARD_STATUS=$(package_status wazuh-dashboard)
+
+MODE=none
+if [[ "$MANAGER_STATUS" == installed && "$INDEXER_STATUS" == installed && "$DASHBOARD_STATUS" == installed ]]; then
+    MODE=full
+elif [[ "$MANAGER_STATUS" == installed ]]; then
+    MODE=manager-only
+fi
+
+add_finding wazuh_mode "$( [[ "$MODE" != none ]] && status_ok || status_warn )" \
+    "$MODE (manager=$(package_version wazuh-manager); indexer=$(package_version wazuh-indexer); dashboard=$(package_version wazuh-dashboard))"
+
+MANAGER_SVC=$(service_state wazuh-manager.service)
+INDEXER_SVC=$(service_state wazuh-indexer.service)
+DASHBOARD_SVC=$(service_state wazuh-dashboard.service)
+
+if [[ "$MODE" == none ]]; then
+    add_finding services "$(status_info)" "No Wazuh packages installed. Run sudo homelab-siem-setup or sudo homelab-siem-full-setup."
+else
+    local_svc_ok=1
+    [[ "$MANAGER_SVC" == active ]] || local_svc_ok=0
+    if [[ "$MODE" == full ]]; then
+        [[ "$INDEXER_SVC" == active ]] || local_svc_ok=0
+        [[ "$DASHBOARD_SVC" == active ]] || local_svc_ok=0
+    fi
+    add_finding services "$( ((local_svc_ok)) && status_ok || status_fail )" \
+        "manager=$MANAGER_SVC indexer=$INDEXER_SVC dashboard=$DASHBOARD_SVC"
+fi
+
+SOURCE_FILE=/etc/apt/sources.list.d/wazuh.list
+if [[ -f "$SOURCE_FILE" ]]; then
+    if grep -Eq '^[[:space:]]*deb ' "$SOURCE_FILE"; then
+        add_finding wazuh_repo "$(status_warn)" \
+            "Enabled in $SOURCE_FILE. Accidental upgrades can break a Wazuh stack."
+    else
+        add_finding wazuh_repo "$(status_ok)" "Disabled in $SOURCE_FILE"
+    fi
+else
+    add_finding wazuh_repo "$(status_info)" "No $SOURCE_FILE present"
+fi
+
+if command -v ss >/dev/null 2>&1; then
+    LISTEN=$(ss -tlnH | awk '{print $4}' | sed 's/.*://' | sort -n | uniq | tr '\n' ',' | sed 's/,$//')
+    add_finding listen_ports "$(status_info)" "${LISTEN:-none}"
+else
+    add_finding listen_ports "$(status_info)" "ss not available"
+fi
+
+if command -v ufw >/dev/null 2>&1; then
+    if ((EUID == 0)); then
+        UFW_STATUS=$(ufw status 2>/dev/null | awk 'NR==1 {print $2}')
+        BROAD=$(ufw status numbered 2>/dev/null | awk '
+            /ALLOW/ && ($0 ~ /Anywhere/ || $0 ~ /0\.0\.0\.0\/0/ || $0 ~ /::\/0/) { found=1 }
+            END { print found+0 }
+        ')
+        if [[ "$BROAD" == 1 ]]; then
+            add_finding firewall "$(status_warn)" \
+                "UFW is ${UFW_STATUS:-unknown} and has at least one Anywhere/unrestricted ALLOW rule."
+        else
+            add_finding firewall "$(status_ok)" "UFW is ${UFW_STATUS:-unknown}; no unrestricted ALLOW rules detected."
+        fi
+    else
+        add_finding firewall "$(status_info)" "Run as root to inspect UFW rules."
+    fi
+else
+    add_finding firewall "$(status_info)" "ufw is not installed"
+fi
+
+if [[ ! -x /var/ossec/bin/agent_control ]]; then
+    add_finding agents "$(status_info)" "Wazuh manager agent_control is not installed."
+elif ((EUID != 0)); then
+    add_finding agents "$(status_info)" "Run as root to query /var/ossec/bin/agent_control."
+else
+    AGENT_OUT=$(/var/ossec/bin/agent_control -l 2>/dev/null || true)
+    ACTIVE=$(printf '%s\n' "$AGENT_OUT" | grep -c 'is active' || true)
+    DISCONNECTED=$(printf '%s\n' "$AGENT_OUT" | grep -c 'is disconnected' || true)
+    NEVER=$(printf '%s\n' "$AGENT_OUT" | grep -c 'Never connected' || true)
+    AGENTS_DETAIL="active=$ACTIVE disconnected=$DISCONNECTED never_connected=$NEVER"
+    if ((DISCONNECTED > 0)); then
+        AGENTS_STATUS=$(status_warn)
+    else
+        AGENTS_STATUS=$(status_ok)
+    fi
+    add_finding agents "$AGENTS_STATUS" "$AGENTS_DETAIL"
+fi
+
+CERT_PATHS=(
+    /etc/wazuh-indexer/certs/node.pem
+    /etc/wazuh-indexer/certs/admin.pem
+    /etc/filebeat/certs/filebeat.pem
+    /etc/wazuh-dashboard/certs/wazuh-dashboard.pem
+    /var/ossec/etc/sslmanager.cert
+)
+CERT_SUMMARY=()
+CERT_STATUS=$(status_info)
+if ((EUID != 0)); then
+    add_finding certificates "$(status_info)" "Run as root to inspect Wazuh TLS certificates."
+else
+    found_cert=0
+    for cert in "${CERT_PATHS[@]}"; do
+        [[ -f "$cert" ]] || continue
+        found_cert=1
+        expiry=$(cert_expiry "$cert" || printf 'unreadable')
+        days=$(days_until "$expiry" || true)
+        if [[ -n "$days" && "$days" -lt 30 ]]; then
+            CERT_STATUS=$(status_fail)
+        elif [[ -n "$days" && "$days" -lt 60 && "$CERT_STATUS" != FAIL ]]; then
+            CERT_STATUS=$(status_warn)
+        elif [[ "$CERT_STATUS" == INFO ]]; then
+            CERT_STATUS=$(status_ok)
+        fi
+        CERT_SUMMARY+=("$(basename "$cert"): ${expiry}${days:+ (${days}d)}")
+    done
+    if ((found_cert == 0)); then
+        add_finding certificates "$(status_info)" "No common Wazuh certificate paths found."
+    else
+        add_finding certificates "$CERT_STATUS" "$(IFS='; '; printf '%s' "${CERT_SUMMARY[*]}")"
+    fi
+fi
+
+ERRORS_DETAIL="No recent critical manager errors found."
+ERRORS_STATUS=$(status_ok)
+if [[ -r /var/ossec/logs/ossec.log ]]; then
+    ERROR_COUNT=$(grep -Eci 'error|critical|fatal' /var/ossec/logs/ossec.log 2>/dev/null | tail -n 1 || true)
+    RECENT=$(grep -Ei 'error|critical|fatal' /var/ossec/logs/ossec.log 2>/dev/null | tail -n 3 | tr '\n' '|' | sed 's/|$//')
+    if [[ "${ERROR_COUNT:-0}" -gt 0 ]]; then
+        ERRORS_STATUS=$(status_warn)
+        ERRORS_DETAIL="Matching lines in ossec.log: ${ERROR_COUNT}. Latest: ${RECENT:-none}"
+    fi
+elif [[ -f /var/ossec/logs/ossec.log ]]; then
+    ERRORS_STATUS=$(status_info)
+    ERRORS_DETAIL="ossec.log exists but is unreadable as this user."
+else
+    ERRORS_STATUS=$(status_info)
+    ERRORS_DETAIL="ossec.log not present."
+fi
+add_finding recent_errors "$ERRORS_STATUS" "$ERRORS_DETAIL"
+
+OVERALL=OK
+for key in "${REPORT_KEYS[@]}"; do
+    case "${REPORT_STATUS[$key]}" in
+        FAIL) OVERALL=FAIL ;;
+        WARN) [[ "$OVERALL" != FAIL ]] && OVERALL=WARN ;;
+    esac
+done
+
+if ((JSON)); then
+    printf '{\n'
+    printf '  "overall": %s,\n' "$(json_escape "$OVERALL")"
+    printf '  "generated_at": %s,\n' "$(json_escape "$(date -Is)")"
+    printf '  "findings": {\n'
+    last=${#REPORT_KEYS[@]}
+    i=0
+    for key in "${REPORT_KEYS[@]}"; do
+        i=$((i + 1))
+        printf '    %s: {"status": %s, "detail": %s}' \
+            "$(json_escape "$key")" \
+            "$(json_escape "${REPORT_STATUS[$key]}")" \
+            "$(json_escape "${REPORT_DETAIL[$key]}")"
+        if ((i < last)); then
+            printf ',\n'
+        else
+            printf '\n'
+        fi
+    done
+    printf '  }\n}\n'
+else
+    printf 'homelab-siem-doctor  overall=%s\n' "$OVERALL"
+    printf 'Generated: %s\n\n' "$(date -Is)"
+    for key in "${REPORT_KEYS[@]}"; do
+        print_finding "$key"
+    done
+    printf '\nThis report is read-only. No packages, firewall rules, or Wazuh files were changed.\n'
+fi
+
+if ((EUID == 0)); then
+    {
+        printf '%s overall=%s\n' "$(date -Is)" "$OVERALL"
+        for key in "${REPORT_KEYS[@]}"; do
+            print_finding "$key"
+        done
+        printf '\n'
+    } >>"$LOG_PATH" 2>/dev/null || true
+fi
+
+case "$OVERALL" in
+    FAIL) exit 2 ;;
+    WARN) exit 1 ;;
+    *) exit 0 ;;
+esac

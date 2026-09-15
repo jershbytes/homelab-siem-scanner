@@ -186,6 +186,21 @@ This project is intended for personal laboratories, training environments, and s
 - [Wazuh quickstart](https://documentation.wazuh.com/current/quickstart.html)
 - [Launchpad PPA](https://launchpad.net/~rist138/+archive/ubuntu/ppa)
 
+## Health check
+
+After either package is installed:
+
+    sudo homelab-siem-doctor
+
+Machine-readable output:
+
+    sudo homelab-siem-doctor --json
+
+The doctor command is read-only. It does not install Wazuh, change UFW, or
+modify configuration. Exit codes are `0` for OK, `1` for warnings, and `2`
+for failures.
+
+
 ## License
 
 Distributed under GPL-3. See `debian/copyright` for licensing details.
